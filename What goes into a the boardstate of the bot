@@ -1,0 +1,44 @@
+What goes into a the boardstate of the bot?
+
+The bot needs to know what is going on in the current boardstate to make decisions and learn. The obvious things like what and how many cards in hand and what they do, creatures on the field, available mana and such are fairly straight forward.
+
+Bot info:
+  -Health remaining
+  -Number of poison counters
+  -Current hand size limit
+
+Bot hand information:
+  -Number of cards in hand
+  -Card mana cost
+  -Card CMC
+  -Card type
+  -Card effects
+  -Card power/toughness
+  -Revealed cards to player in hand (Probably mostly only going to be for playing the revealed version of a card first in reality.)
+
+Bot battlefield information:
+  -Number of lands
+  -Color of mana lands can produce
+  -Has a land been played normally yet
+  -Number of each other permanent type
+  -power/toughness of each creature bot controls
+  -whether any particular creature has summoning sickness or not
+  -permanent effects
+
+Bot graveyard info:
+  -Number of cards in GY
+  -Card types in GY
+  -effects that matter in GY (flashback, eternalize, escape)
+
+Bot exile cards:
+  -Number of cards in exile
+  -effects that matter in GY (foretell, plot)
+
+Bot Deck info:
+  -Number of cards remaining
+  -Full list of known cards in library
+  -Probabilities of drawing any particular card
+
+Player info:
+  -Largely the same as bot known info
+  -Revealed cards in player hand
