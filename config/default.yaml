@@ -1,0 +1,27 @@
+# Arcbound AI Server Configuration
+
+server:
+  host: "0.0.0.0"
+  port: 8090
+  workers: 1
+  timeout_ms: 5000
+
+model:
+  vocab_size: 31200
+  d_model: 512
+  nhead: 8
+  num_layers: 6
+  dim_feedforward: 2048
+  max_seq_len: 4096
+  dropout: 0.1
+
+inference:
+  temperature: 0.7
+  top_p: 0.9
+  checkpoint_path: "checkpoints/best_model.pt"
+  device: "auto"  # auto-detect CUDA/MPS/CPU
+
+logging:
+  level: "INFO"
+  log_requests: true
+  log_decisions: true
