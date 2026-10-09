@@ -2,7 +2,7 @@
 
 server:
   host: "0.0.0.0"
-  port: 8090
+  port: 8080
   workers: 1
   timeout_ms: 5000
 
@@ -20,8 +20,20 @@ inference:
   top_p: 0.9
   checkpoint_path: "checkpoints/best_model.pt"
   device: "auto"  # auto-detect CUDA/MPS/CPU
+  # Epsilon-greedy exploration: with this probability the AI picks a random
+  # option instead of the model's top pick. Keeps replay data diverse and
+  # breaks the pass-mode collapse (the model otherwise only ever trains on its
+  # own pass-heavy decisions and learns to always pass). 0.0 = pure
+  # exploitation (old behavior).
+  epsilon: 0.1
 
 logging:
   level: "INFO"
   log_requests: true
   log_decisions: true
+  # The match file (match_*.json) is the ONLY replay artifact and the single
+  # source of truth for training — it carries match/game rewards, sideboard
+  # data, and decision records. Per-game replay files (YYYY-MM-DD_*.json) are
+  # DEPRECATED and are NEVER written, regardless of this setting. This key is
+  # retained for backward compatibility but has no effect.
+  write_replay_files: false

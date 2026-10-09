@@ -7,6 +7,78 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+from arcbound.gui.tabs.settings_tab import _Tooltip
+
+
+# Hover tooltip descriptions for the model tab's sections.
+MODEL_DESCRIPTIONS = {
+    "name": (
+        "The model's name — the directory under models/ where its checkpoint "
+        "(model.pt), config, and vocabularies live. Select a model in the list "
+        "to see its details."
+    ),
+    "created": (
+        "When this model was first created. A model's architecture (encoder "
+        "parameters) is fixed at creation; training only updates its weights."
+    ),
+    "modified": (
+        "When the model was last trained or its config was last saved. Compare "
+        "with 'Created' to see how recently it has been updated."
+    ),
+    "games_trained": (
+        "How many distinct replay files this model has been trained on (cumulative "
+        "across all training runs). A low number means the model has seen little "
+        "data — expect weak play and noisy evaluations. Play and log more games, "
+        "then train again to grow this."
+    ),
+    "total_steps": (
+        "Total gradient updates applied to this model across all training runs. "
+        "Roughly (experiences / batch_size) per epoch. Very low step counts "
+        "(hundreds) mean the model is barely trained; thousands to tens of "
+        "thousands is more typical for a usable model."
+    ),
+    "d_model": (
+        "Transformer hidden dimension size — the width of every token's internal "
+        "representation. Larger = more capacity but slower. Changing this "
+        "requires retraining from scratch (the checkpoint shape changes)."
+    ),
+    "nhead": (
+        "Number of attention heads — parallel 'lenses' the model uses to relate "
+        "tokens. Must divide d_model evenly. Changing this requires retraining "
+        "from scratch."
+    ),
+    "num_layers": (
+        "Number of transformer layers — how many times tokens are re-mixed before "
+        "the model decides. More layers = deeper reasoning, slower inference. "
+        "Changing this requires retraining from scratch."
+    ),
+    "dim_feedforward": (
+        "Inner feed-forward network width — the per-token 'thinking space' "
+        "between attention steps. Typically 4x d_model. Changing this requires "
+        "retraining from scratch."
+    ),
+    "dropout": (
+        "Fraction of neurons randomly zeroed during training to prevent "
+        "overfitting. Only active while training (no effect at inference). "
+        "Higher values help when you have little data."
+    ),
+    "max_seq_len": (
+        "Maximum token sequence length the model can process. Must cover your "
+        "largest board states or they get truncated. Changing this requires "
+        "retraining from scratch."
+    ),
+    "load": (
+        "Load the selected model into the AI server so it uses this model for "
+        "live decisions and evaluations. The server falls back to heuristics "
+        "when no model is loaded."
+    ),
+    "create_config": (
+        "Create a default config.json for the selected model (required before "
+        "training). This sets the architecture (encoder) and training "
+        "hyperparameters; you can tune them in the Settings tab afterwards."
+    ),
+}
+
 
 DEFAULT_ENCODER = {
     "d_model": 512,
@@ -62,6 +134,11 @@ class ModelTab(ttk.Frame):
         self.lbl_games.pack(anchor="w", pady=2)
         self.lbl_steps = ttk.Label(info_frame, text="Total Steps: 0")
         self.lbl_steps.pack(anchor="w", pady=2)
+        _Tooltip(self.lbl_name, MODEL_DESCRIPTIONS["name"])
+        _Tooltip(self.lbl_created, MODEL_DESCRIPTIONS["created"])
+        _Tooltip(self.lbl_modified, MODEL_DESCRIPTIONS["modified"])
+        _Tooltip(self.lbl_games, MODEL_DESCRIPTIONS["games_trained"])
+        _Tooltip(self.lbl_steps, MODEL_DESCRIPTIONS["total_steps"])
 
         # Encoder params
         enc_frame = ttk.LabelFrame(main, text="Encoder Parameters", padding=10)
@@ -79,12 +156,22 @@ class ModelTab(ttk.Frame):
         self.lbl_dropout.pack(anchor="w", pady=2)
         self.lbl_max_seq = ttk.Label(enc_frame, text="max_seq_len: —")
         self.lbl_max_seq.pack(anchor="w", pady=2)
+        _Tooltip(self.lbl_d_model, MODEL_DESCRIPTIONS["d_model"])
+        _Tooltip(self.lbl_nhead, MODEL_DESCRIPTIONS["nhead"])
+        _Tooltip(self.lbl_num_layers, MODEL_DESCRIPTIONS["num_layers"])
+        _Tooltip(self.lbl_dim_ff, MODEL_DESCRIPTIONS["dim_feedforward"])
+        _Tooltip(self.lbl_dropout, MODEL_DESCRIPTIONS["dropout"])
+        _Tooltip(self.lbl_max_seq, MODEL_DESCRIPTIONS["max_seq_len"])
 
         # Actions
         action_frame = ttk.Frame(main)
         action_frame.pack(fill=tk.X, pady=10)
-        ttk.Button(action_frame, text="Load Model", command=self._load).pack(side=tk.LEFT, padx=5)
-        ttk.Button(action_frame, text="Create Default Config", command=self._create_config).pack(side=tk.LEFT, padx=5)
+        btn_load = ttk.Button(action_frame, text="Load Model", command=self._load)
+        btn_load.pack(side=tk.LEFT, padx=5)
+        btn_create = ttk.Button(action_frame, text="Create Default Config", command=self._create_config)
+        btn_create.pack(side=tk.LEFT, padx=5)
+        _Tooltip(btn_load, MODEL_DESCRIPTIONS["load"])
+        _Tooltip(btn_create, MODEL_DESCRIPTIONS["create_config"])
 
     def select_model(self, name: str):
         """Called when a model is selected in the model list."""

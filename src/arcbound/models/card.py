@@ -27,6 +27,7 @@ class CardInfo(BaseModel):
     tapped: bool = False
     attacking: bool = False
     blocking: bool = False
+    blocked: bool = False
     flipped: bool = False
     face_down: bool = False
     owner: str | None = None
@@ -35,3 +36,4 @@ class CardInfo(BaseModel):
     abilities: list[str] = []
     keywords: list[str] = []
     revealed_to: list[str] = []
+    count: int = 1

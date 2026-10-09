@@ -7,7 +7,7 @@ This document plans a transformer encoder-based AI server that learns to play Ma
 **Key Design Goals:**
 - Transformer encoder architecture for board state understanding
 - Self-play training loop for unsupervised learning
-- Complete zone visibility (hand, graveyards, exile, command zone, battlefield, library counts)
+- Per-perspective zone visibility: the server receives the full board (both hands and both decks) but the tokenizer masks each player's hidden zones (hand, decklist) to that player's point of view, so the AI only ever sees its own hand and deck
 - Support for all decision types defined by Forge's [`PlayerController`](../forge/forge-game/src/main/java/forge/game/player/PlayerController.java)
 - Fast inference (< 2 seconds per decision) to maintain gameplay flow
 
@@ -203,8 +203,12 @@ class PlayerState(BaseModel):
     poison_counters: int = 0
     mana_pool: dict[str, int] | None
     commanders: list[CardInfo] | None
+    # commander_damage maps each commander's name to the damage THAT commander
+    # has dealt to THIS player (the 21-damage loss rule is per-commander).
     commander_damage: dict[str, int] | None
-    commander_tax: int | None
+    # commander_tax maps each commander's name to how many times it has been
+    # cast (each recast adds one mana of tax).
+    commander_tax: dict[str, int] | None
     battlefield: list[CardInfo]
     hand: list[CardInfo]
     graveyard: list[CardInfo]
@@ -212,8 +216,14 @@ class PlayerState(BaseModel):
     command_zone: list[CardInfo] | None
     library_size: int
     sideboard_size: int | None
+    mulligan_count: int = 0
     hand_hidden: bool = False
     is_focal: bool = False
+    opponent_id: str | None = None
+    # Full decklist (main + sideboard). Forge sends it for EVERY player; the
+    # tokenizer only emits decklist tokens for the perspective player, so the
+    # AI still only ever sees its own deck.
+    decklist: list[CardInfo] = []
 
 class BoardState(BaseModel):
     game_id: str
@@ -264,6 +274,16 @@ flowchart LR
 ### Tokenization Strategy
 
 Magic: The Gathering board states are heterogeneous and hierarchical. The tokenizer flattens the board state into a linear sequence of tokens while preserving structure through special tokens.
+
+**Perspective-based hidden-zone masking:** Forge sends the full board (both
+players' hands and both decklists), but the tokenizer builds tokens from a
+single *perspective* (default: the board's `focal_player`). Only the
+perspective player's hand and decklist are emitted (plus any cards explicitly
+`revealed_to` that player), and the focal/relative features are computed from
+that player. This guarantees the AI never sees the opponent's hidden cards, and
+it is what lets the server compute a per-player self-assessment (e.g. "how the
+AI thinks the human is doing") by re-tokenizing the same board from the
+human's perspective.
 
 **Token Categories:**
 
@@ -322,6 +342,56 @@ For a simplified board state:
 | **Total** | **~31,200** | Manageable vocabulary size |
 
 **Important: One Token Per Card Name, Not Per Printing.** "Lightning Bolt" has been printed in 50+ sets but gets a single token ID. All occurrences share the same token so the model learns from every game where any printing appears. Uses the `oracle_name` field from [`CardInfo`](../forge/forge-external-ai/src/main/java/forge/externalai/boardstate/BoardState.java) as the canonical identifier, not the printed set or collector number.
+
+### Feature Layout (per token)
+
+The implemented tokenizer ([`tokenizer.py`](src/arcbound/encoder/tokenizer.py)) produces a
+fixed **122-dimensional** feature vector per token (`FEATURE_DIM = 122`), plus a learned
+card-name embedding (32-dim) and keyword embedding (16-dim) concatenated on. The
+authoritative slot map lives in the module docstring; the highlights:
+
+| Slots | Meaning |
+|-------|---------|
+| `[0]` | token type (CLS / SEP / PLAYER / CARD / DECISION / OPTION / DECK) |
+| `[1..7]` | player-level: focal, active, life, library, hand size, battlefield size, poison |
+| `[8..14]` | card-level: CMC, power, toughness, damage, tapped, attacking, blocking |
+| `[15..19]` | zone one-hot (battlefield / hand / graveyard / exile / command) |
+| `[20..29]` | decision + option context (type, counts, mulligan info) |
+| `[30..31]` | decklist membership + copy count |
+| `[32..36]` | card color identity (W/U/B/R/G) |
+| `[37]` | loyalty |
+| `[38..40]` | counters (+1/+1, -1/-1, other) |
+| `[41..42]` | controller/owner is focal |
+| `[43..48]` | player mana pool (total + per color) |
+| `[49..51]` | player-level commander-damage aggregates (max / total / from focal) |
+| `[52]` | commander tax |
+| `[53..57]` | option detail content |
+| `[58]` | **commander card:** damage this commander dealt to the focal player |
+| `[59..66]` | **commander card:** damage this commander dealt to each player (`board.players[i]`, i=0..7) |
+| `[67..70]` | turn / spell-cast tracking (total, own, other, turn number) |
+| `[71..76]` | **card:** type one-hot (creature / land / enchantment / instant / sorcery / artifact) |
+| `[77..78]` | **card:** is-token / is-legendary flags |
+| `[79..93]` | **card:** keyword multi-hot (15 decision-relevant keywords) |
+| `[94..95]` | **player:** graveyard size, exile size |
+| `[96..100]` | **player:** land count, creature count, total power, total toughness, untapped lands |
+| `[101..103]` | **player:** hand mana curve (CMC 0–1 / 2–3 / 4+) |
+| `[104..110]` | **board (CLS):** phase one-hot (beginning / main1 / combat / main2 / end / cleanup / other) |
+| `[111]` | **board (CLS):** stack depth |
+| `[112..116]` | **board (CLS):** combat aggregates (attackers, blockers, unblocked, attacking power, lethal flag) |
+| `[117]` | **board (CLS):** average battlefield CMC |
+| `[118..120]` | **board (CLS):** relative features (life diff, tempo diff, card advantage) |
+| `[121]` | **decision:** prompt description length |
+
+**Commander damage is tracked per commander, not aggregated.** The 21-damage loss rule
+is per-commander, so the model must know *which* commander is the threat. Each commander
+card token therefore carries the full per-commander × per-player damage matrix in
+`[59..66]` (one bounded slot per player, up to 8), with `[58]` as the focal player's
+column. The player-level aggregates in `[49..51]` are kept as supplementary summary
+signals.
+
+> **Note:** `FEATURE_DIM` is part of the model's input projection, so changing it
+> (as adding the commander-damage matrix did) invalidates existing checkpoints —
+> retrain to pick up a new feature layout.
 
 ### Model Architecture
 
@@ -446,6 +516,16 @@ The AI learns through self-play games, using a combination of:
 **Optional: Supervised Pre-Training**
 
 If human game data is available (Forge game logs), pre-train on human decisions before self-play fine-tuning.
+
+**Player-type filtering**
+
+Each match replay records every player's type (`human`, `bot`, or `ai`) plus a
+composition label (e.g. `human_vs_ai`) under the `match` key. Both the policy and
+value extractors accept an optional `player_types` filter (CLI: `--player-types`,
+GUI: the Training tab's "Learn From" selector) so you can restrict which players'
+moves contribute experiences — e.g. learn only from the external AI's decisions
+(`ai`), or only from human/bot play (`human,bot`). When omitted, every recorded
+move is used, so legacy replays without player types are never dropped.
 
 ### Training Loop
 
@@ -604,102 +684,6 @@ checkpoint:
   save_dir: "checkpoints/"
 ```
 
-## Development Phases
-
-### Phase 1: Foundation — Server Skeleton and Data Models
-
-**Goal:** Running server that accepts requests and returns fallback decisions.
-
-1. Create project structure with `pyproject.toml`
-2. Implement Pydantic models matching Java DTOs
-3. Implement FastAPI server with all 4 endpoints
-4. Implement fallback decision logic (random/pass)
-5. Write unit tests for model validation
-6. Test: Forge can connect and receive decisions
-
-**Deliverables:**
-- `src/arcbound/server.py` — FastAPI application
-- `src/arcbound/models/` — Pydantic models
-- `src/arcbound/routes/` — API route handlers
-- `tests/test_models.py` — Model validation tests
-- `tests/test_server.py` — Endpoint tests
-
-### Phase 2: Tokenization and Feature Extraction
-
-**Goal:** Convert BoardState JSON to token sequences.
-
-1. Build vocabulary from card database
-2. Implement tokenizer converting BoardState → token IDs
-3. Implement inverse tokenizer for debugging
-4. Implement feature extraction for card properties
-5. Write tests for tokenization round-trips
-
-**Deliverables:**
-- `src/arcbound/encoder/tokenization.py` — Tokenizer
-- `src/arcbound/encoder/features.py` — Feature extraction
-- `tests/test_encoder.py` — Tokenization tests
-
-### Phase 3: Transformer Model
-
-**Goal:** Working transformer encoder with policy and value heads.
-
-1. Implement transformer encoder module
-2. Implement policy head with decision-type routing
-3. Implement value head
-4. Implement decision decoder
-5. Implement model loading/saving
-6. Test: Model produces valid outputs for sample inputs
-
-**Deliverables:**
-- `src/arcbound/encoder/transformer.py` — Transformer model
-- `src/arcbound/decision/policy.py` — Policy head
-- `src/arcbound/decision/value.py` — Value head
-- `src/arcbound/decision/engine.py` — Decision engine
-- `tests/test_decision.py` — Decision engine tests
-
-### Phase 4: Training Infrastructure
-
-**Goal:** Self-play training loop.
-
-1. Implement replay buffer
-2. Implement reward computation
-3. Implement training loop with PPO
-4. Implement model checkpointing
-5. Implement training metrics logging
-6. Test: Training loop runs without errors
-
-**Deliverables:**
-- `src/arcbound/training/replay_buffer.py` — Replay buffer
-- `src/arcbound/training/reward.py` — Reward computation
-- `src/arcbound/training/trainer.py` — Training loop
-- `scripts/start_training.sh` — Training launcher
-
-### Phase 5: Integration and Performance
-
-**Goal:** End-to-end integration with Forge.
-
-1. Connect server to Forge external AI
-2. Run smoke test games
-3. Profile inference performance
-4. Optimize tokenization and inference
-5. Implement model warmup and caching
-6. Add comprehensive logging
-
-**Deliverables:**
-- `scripts/start_server.sh` — Production server launcher
-- Integration test scripts
-- Performance benchmarks
-
-### Phase 6: Training and Iteration
-
-**Goal:** Train the model to play competently.
-
-1. Run initial self-play training
-2. Analyze game logs for common failures
-3. Adjust reward shaping
-4. Iterate on model architecture
-5. Evaluate against Forge built-in AI
-
 ## Dependencies
 
 ### Core Dependencies
@@ -724,33 +708,3 @@ checkpoint:
 | black | >=23.0.0 | Code formatting |
 | ruff | >=0.1.0 | Linting |
 | mypy | >=1.0.0 | Type checking |
-
-## Card Database
-
-The tokenizer needs a comprehensive card database to map card names to token IDs. Options:
-
-1. **Scryfall API** — Free API for card data
-2. **Forge card database** — Extract from Forge's existing card data
-3. **Hybrid** — Use Forge data as primary, Scryfall for validation
-
-**Recommended:** Extract card names from Forge's set files to ensure consistency with the game engine.
-
-## Performance Targets
-
-| Metric | Target | Measurement |
-|--------|--------|-------------|
-| Inference latency | < 2 seconds p99 | Time from request to response |
-| Tokenization time | < 100 ms | BoardState JSON → token IDs |
-| Memory usage | < 4 GB | Model + runtime |
-| Throughput | > 10 decisions/sec | Sequential decisions |
-
-## File Restrictions
-
-This architecture plan covers the Python AI server only. The Java Forge modifications are documented in [`plans/external-ai-architecture.md`](plans/external-ai-architecture.md) and are already implemented in the `forge/forge-external-ai` module.
-
-## Next Steps
-
-1. Review this architecture plan and provide feedback
-2. Create the project structure and `pyproject.toml`
-3. Implement Phase 1: Server skeleton and data models
-4. Iterate through remaining phases

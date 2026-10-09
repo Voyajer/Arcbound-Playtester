@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+
+# Self-contained data directories (created at runtime)
+models/
+replays/
+logs/
+server.log
+config.json

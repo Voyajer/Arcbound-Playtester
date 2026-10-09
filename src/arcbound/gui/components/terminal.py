@@ -15,6 +15,7 @@ class ActionTerminal(ttk.Frame):
         "chosen": "#66ff66",
         "timeout": "#ff6666",
         "error": "#ff4444",
+        "warning": "#ffdd44",
         "event": "#66ff66",
         "model": "#6699ff",
         "info": "#cccccc",
@@ -63,6 +64,9 @@ class ActionTerminal(ttk.Frame):
 
     def log_event(self, message: str):
         self.log(message, "event")
+
+    def log_warning(self, message: str):
+        self.log(message, "warning")
 
     def log_error(self, message: str):
         self.log(message, "error")

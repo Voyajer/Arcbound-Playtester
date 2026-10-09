@@ -1,31 +1,182 @@
 """Settings tab with hyperparameter editor."""
 
 import json
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
 from typing import Callable, Optional
 
 
-# Hover tooltip descriptions for each parameter
+# Hover tooltip descriptions for each parameter.
+#
+# Each entry explains (1) what the parameter is, (2) what it does, and
+# (3) how to adjust it based on the amount and quality of the replay data
+# you have. Keep them short enough to read in a tooltip.
 PARAM_DESCRIPTIONS = {
-    "d_model": "Transformer hidden dimension size. Larger = more capacity but slower. Must be divisible by nhead.",
-    "nhead": "Number of attention heads. Splits d_model into parallel attention streams.",
-    "num_layers": "Number of transformer encoder/decoder layers. More layers = deeper model.",
-    "dim_feedforward": "Inner feed-forward network dimension. Typically 4x d_model.",
-    "max_seq_len": "Maximum token sequence length the model can process.",
-    "batch_size": "Number of training samples per gradient update step.",
-    "dropout": "Fraction of neurons randomly zeroed during training to prevent overfitting.",
-    "learning_rate": "Step size for gradient descent optimizer. Too high = unstable, too low = slow.",
-    "entropy_coef": "Weight of the entropy bonus term. Encourages exploration during training.",
-    "value_coef": "Weight of the value loss term relative to policy loss.",
-    "gamma": "Discount factor for future rewards. 1.0 = no discount, 0.0 = only immediate rewards.",
-    "clip_epsilon": "PPO clipping range. Limits how much policy can change per update step.",
-    "max_grad_norm": "Maximum gradient norm for clipping. Prevents exploding gradients.",
-    "host": "Network interface the AI server binds to. 0.0.0.0 = all interfaces.",
-    "port": "TCP port the AI server listens on. Forge must match this value.",
-    "timeout_ms": "Milliseconds to wait for AI decision before fallback. Higher = more think time.",
-    "epochs": "Number of full passes through the training dataset.",
+    # --- Model architecture (Settings tab) ---
+    "d_model": (
+        "Transformer hidden dimension size — the width of every token's internal "
+        "representation. Larger = more capacity to memorize card interactions, but "
+        "slower training and inference, and it must be divisible by nhead. "
+        "With little data (< ~50 games) keep it small (256-512) so the model can't "
+        "memorize noise; with lots of data (hundreds of games) you can grow it "
+        "(512-1024) to capture more nuance."
+    ),
+    "nhead": (
+        "Number of attention heads — parallel 'lenses' the model uses to relate "
+        "tokens (e.g. one head may track mana, another threats). Splits d_model "
+        "into nhead equal streams, so d_model must be divisible by nhead. "
+        "Rarely needs changing: 4-8 is a good range. More heads help when your "
+        "data contains many distinct interaction types; with small data, fewer "
+        "heads (4) concentrate capacity better."
+    ),
+    "num_layers": (
+        "Number of transformer layers — how many times tokens are re-mixed before "
+        "the model decides. More layers = deeper reasoning but slower and harder "
+        "to train. With small data, 3-4 layers is usually enough; with large, "
+        "diverse data, 6-8 can help. Watch for the loss plateauing or rising — "
+        "that's a sign of too many layers for your data."
+    ),
+    "dim_feedforward": (
+        "Inner feed-forward network width — the per-token 'thinking space' between "
+        "attention steps. Typically 4x d_model. Larger = more capacity, slower "
+        "training. Scale it with d_model (keep ~4x). With limited data, a smaller "
+        "value (2x d_model) reduces overfitting."
+    ),
+    "max_seq_len": (
+        "Maximum token sequence length the model can process — a hard cap on how "
+        "many board tokens (cards, players, options) fit in one input. Must be at "
+        "least as large as your biggest board state or those states get truncated. "
+        "2048 covers most games; raise it only if you see truncation warnings, "
+        "since longer sequences cost quadratically more compute."
+    ),
+    "dropout": (
+        "Fraction of neurons randomly zeroed during training — the main defense "
+        "against overfitting (memorizing your replays instead of generalizing). "
+        "With little data, raise it (0.1-0.2) so the model can't memorize; with "
+        "lots of high-quality data, lower it (0.05-0.1) so it can learn fine "
+        "details. 0.0 disables it and will overfit on small datasets."
+    ),
+    "learning_rate": (
+        "Step size for the gradient optimizer — how boldly the model updates its "
+        "weights each batch. Too high = loss spikes or diverges; too low = slow, "
+        "stuck learning. Start at 0.001. If the loss jumps around or explodes, "
+        "halve it; if it barely moves, double it. Small datasets tolerate lower "
+        "rates better (0.0003-0.001)."
+    ),
+    "entropy_coef": (
+        "Weight of the entropy bonus — encourages the policy to keep its option "
+        "probabilities spread out rather than collapsing onto one choice. "
+        "Useful early in training (keeps exploration) but too high makes the AI "
+        "play randomly. With small data, keep it modest (0.01); if the AI always "
+        "picks the same option, raise it slightly; if it plays erratically, lower "
+        "it toward 0."
+    ),
+    "value_coef": (
+        "Weight of the value/Q loss relative to the policy loss — how hard the "
+        "model is pushed to estimate board value (win/lose) alongside choosing "
+        "options. Higher = better position evaluation but the value signal can "
+        "dominate. With lots of games (value data is plentiful), 0.5-1.0 is fine; "
+        "with few games, keep it at 0.5 or lower so the sparse value targets "
+        "don't destabilize policy learning."
+    ),
+    "gamma": (
+        "Discount factor for value targets — how much earlier moves in a game are "
+        "credited with the final outcome. 0.99 (default) means a move 10 turns "
+        "from the end gets ~90% of the outcome's weight. Lower (0.9) makes the "
+        "value head focus on late-game positions; higher (0.999) spreads credit "
+        "further back. Keep 0.99 unless you have a specific reason; it matters "
+        "most when you have many long games."
+    ),
+    "td_weight": (
+        "Blend weight for the dense TD reward (V(s') - V(s)) in policy training. "
+        "The policy reward becomes (1 - td_weight) * game_outcome + td_weight * "
+        "TD_reward. The TD reward is a per-step signal from the value head: it "
+        "rewards moves that improve the position and — crucially — treats a good "
+        "pass as neutral (the position is unchanged, so the reward is ~0, not "
+        "negative). This is what stops the AI learning that 'always pass' is "
+        "safe. 0.5 (default) balances the sparse win/lose signal with the dense "
+        "per-step signal. 0.0 = old behavior (game outcome only). Only used when "
+        "the value head has been trained (value is trained first automatically)."
+    ),
+    "clip_epsilon": (
+        "PPO clipping range — limits how much the policy can change per update "
+        "(the ratio of new to old action probabilities is clamped to "
+        "[1-eps, 1+eps]). Smaller = safer, slower policy updates; larger = faster "
+        "but riskier. 0.2 is the standard. With small or noisy data, use 0.1-0.15 "
+        "to avoid the policy swinging wildly between batches."
+    ),
+    "max_grad_norm": (
+        "Maximum gradient norm for clipping — a safety brake that rescales "
+        "gradients if they exceed this value, preventing exploding-gradient "
+        "crashes. 1.0 is the standard and rarely needs changing. Lower it (0.5) "
+        "if training diverges; raise it only if training is suspiciously slow."
+    ),
+    # --- Server (Settings tab) ---
+    "host": (
+        "Network interface the AI server binds to. 0.0.0.0 = all interfaces "
+        "(needed if Forge runs on another machine); 127.0.0.1 = local only. "
+        "Does not affect training or model quality."
+    ),
+    "port": (
+        "TCP port the AI server listens on. Forge's external-AI config must use "
+        "the same port or it can't reach the server. Does not affect training or "
+        "model quality."
+    ),
+    "timeout_ms": (
+        "Milliseconds to wait for the AI's decision before falling back to "
+        "heuristics. Higher = more think time (better play, slower game); lower = "
+        "faster but more fallbacks. 5000 is a good default; raise to 10000+ if "
+        "you see many 'timeout' entries in the action terminal, especially with a "
+        "large model."
+    ),
+    "epsilon": (
+        "Epsilon-greedy exploration for inference — with this probability the AI "
+        "picks a random option instead of the model's top pick. This keeps the "
+        "replay data diverse and breaks the pass-mode collapse (without it the AI "
+        "only ever trains on its own pass-heavy decisions and learns to always "
+        "pass). 0.15 (default) is a good starting point; raise to 0.2-0.3 if the "
+        "AI still rarely plays cards, lower toward 0.0 once it plays well and you "
+        "want pure exploitation. Requires a server restart to take effect."
+    ),
+    # --- Training (Training tab) ---
+    "epochs": (
+        "Number of full passes through your replay data. More epochs = more "
+        "learning, but past a point the model just memorizes (overfits). With "
+        "little data, use fewer epochs (20-50) and watch the loss; with lots of "
+        "data, 100+ is fine. Stop early if the loss stops improving."
+    ),
+    "batch_size": (
+        "Number of training samples per gradient update. Larger batches = smoother, "
+        "more stable gradients but slower per-epoch progress and more memory; "
+        "smaller batches = noisier but more updates per epoch. 32 is a good "
+        "default. With small datasets, 16-32 keeps updates frequent; with large "
+        "datasets, 64-128 is more stable."
+    ),
+    # --- Training tab: data filters ---
+    "learn_from": (
+        "Which players' moves to learn from. 'AI only' trains purely on the "
+        "external AI's own decisions (best for imitating a strong model); "
+        "'Human + Bot' or 'Human only' learns from your own play (useful when you "
+        "have few AI games but many human games); 'All players' uses everything. "
+        "Policy learning only sees decisions where the external AI played; value "
+        "learning works for any player type."
+    ),
+    "train_policy": (
+        "Train the policy head — learns WHICH option to pick (cast, target, "
+        "block, ...) from decision records. Only available when the external AI "
+        "actually played (its decisions are recorded with the options offered). "
+        "Uncheck it to skip policy training, e.g. when you only have human-vs-bot "
+        "replays (0 policy experiences) and just want to improve board evaluation."
+    ),
+    "train_value": (
+        "Train the value head — learns to estimate how good a board position is "
+        "(win/lose) from the outcome of every recorded move, for any player type "
+        "(human, bot, or AI). This is the head that powers the evaluation graph "
+        "and move analysis. Uncheck it to skip value training, e.g. when you have "
+        "plenty of value data but want to focus a run on the policy."
+    ),
 }
 
 
@@ -65,6 +216,65 @@ def _add_tooltip(widget, key):
         _Tooltip(widget, desc)
 
 
+# Hover tooltip descriptions for the live training metrics (Training tab).
+#
+# Each entry explains (1) what the metric means, (2) what healthy behavior
+# looks like, and (3) warning signs with a quick fix. The values shown next to
+# these tooltips are exponential moving averages (weighted averages) of the
+# per-batch values, so they smooth out batch-to-batch noise while still
+# tracking the trend.
+METRIC_DESCRIPTIONS = {
+    "total_loss": (
+        "Total Loss — the overall error the model is minimizing. It combines "
+        "Policy Loss, Value Loss, and an Entropy bonus.\n\n"
+        "Healthy: fluctuates dynamically and generally trends downward over "
+        "long training cycles.\n"
+        "Warning: if it stays perfectly flat across multiple epochs, your "
+        "gradients are dead or stuck (try a higher learning rate or fresh "
+        "replay data)."
+    ),
+    "policy_loss": (
+        "Policy Loss (Actor) — how well the AI is choosing actions: whether a "
+        "chosen action was better or worse than the critic expected.\n\n"
+        "Healthy: dynamic and often negative (e.g. -0.15 to -0.25). A negative "
+        "value means the agent is successfully maximizing rewards.\n"
+        "Warning: if it flatlines at a hard ceiling (like exactly 0.8000 or "
+        "1.2000), your updates are too aggressive — the policy is hitting the "
+        "PPO clipping wall and freezing. Fix: lower the Learning Rate or "
+        "reduce the total Epochs."
+    ),
+    "value_loss": (
+        "Value Loss (Critic) — how accurately the AI predicts who will win "
+        "from the current board state (Mean Squared Error).\n\n"
+        "Healthy: starts higher and smoothly descends toward a very low "
+        "number (e.g. 0.005 down to 0.0001).\n"
+        "Warning: if it drops to zero almost instantly on a tiny dataset, the "
+        "critic is overfitting (memorizing the specific games instead of "
+        "learning general MTG rules). Fix: increase your sample size (load "
+        "more game replays)."
+    ),
+    "entropy": (
+        "Entropy (Exploration Rate) — the randomness of the AI's choices. High "
+        "entropy = unpredictable exploration; low entropy = confident "
+        "execution.\n\n"
+        "Healthy: starts high (e.g. 1.5 to 2.0+, depending on available "
+        "actions) and very gradually decreases over thousands of steps as the "
+        "AI masters the game.\n"
+        "Warning: if it drops to near zero instantly, the policy has collapsed "
+        "into a repetitive loop (e.g. constantly passing the turn) — raise the "
+        "Entropy Coef to force exploration. If it stays completely flat and "
+        "high, the AI is just guessing randomly and isn't learning."
+    ),
+}
+
+
+def _add_metric_tooltip(widget, key):
+    """Attach a hover tooltip to a widget based on a training-metric key."""
+    desc = METRIC_DESCRIPTIONS.get(key)
+    if desc:
+        _Tooltip(widget, desc)
+
+
 class SettingsTab(ttk.Frame):
     """Tab for editing model architecture and training hyperparameters."""
 
@@ -85,6 +295,7 @@ class SettingsTab(ttk.Frame):
         ("entropy_coef", "Entropy Coef", 0.01, 0.0, 1.0),
         ("value_coef", "Value Coef", 0.5, 0.0, 10.0),
         ("gamma", "Gamma", 0.99, 0.0, 1.0),
+        ("td_weight", "TD Weight", 0.5, 0.0, 1.0),
         ("clip_epsilon", "Clip Epsilon", 0.2, 0.0, 1.0),
         ("max_grad_norm", "Max Grad Norm", 1.0, 0.0, 100.0),
     ]
@@ -92,8 +303,9 @@ class SettingsTab(ttk.Frame):
     # Server fields
     SERVER_FIELDS = [
         ("host", "Host", "0.0.0.0"),
-        ("port", "Port", 8090, 1, 65535),
+        ("port", "Port", 8080, 1, 65535),
         ("timeout_ms", "Timeout (ms)", 5000, 100, 60000),
+        ("epsilon", "Epsilon", 0.15, 0.0, 1.0),
     ]
 
     def __init__(
@@ -115,6 +327,10 @@ class SettingsTab(ttk.Frame):
 
         self._build_ui()
         self._load_defaults()
+        # Overlay the live server values (host/port/timeout/epsilon) from
+        # config/default.yaml so the Server section reflects reality, not just
+        # the built-in defaults.
+        self._load_server_config()
 
     def _build_ui(self):
         canvas = tk.Canvas(self, highlightthickness=0)
@@ -154,8 +370,9 @@ class SettingsTab(ttk.Frame):
         srv.pack(fill=tk.X, pady=(0, 10))
 
         self._add_string_field(srv, "host", "Host", "0.0.0.0")
-        self._add_int_field(srv, "port", "Port", 8090, 1, 65535)
+        self._add_int_field(srv, "port", "Port", 8080, 1, 65535)
         self._add_int_field(srv, "timeout_ms", "Timeout (ms)", 5000, 100, 60000)
+        self._add_float_field(srv, "epsilon", "Epsilon", 0.15, 0.0, 1.0)
 
         # Buttons
         btn_frame = ttk.Frame(padding)
@@ -171,6 +388,10 @@ class SettingsTab(ttk.Frame):
         lbl.pack(side=tk.LEFT)
         entry = ttk.Spinbox(frame, from_=lo, to=hi, width=12, value=default)
         entry.pack(side=tk.RIGHT)
+        # ttk.Spinbox's value= option is silently ignored on some Tcl builds
+        # (the field renders blank), so set the displayed text explicitly.
+        entry.delete(0, tk.END)
+        entry.insert(0, str(default))
         self._entries[key] = (entry, "int", lo, hi)
         _add_tooltip(lbl, key)
         _add_tooltip(entry, key)
@@ -228,6 +449,98 @@ class SettingsTab(ttk.Frame):
                         widget.insert(0, str(defn[2]))
                     break
 
+    def _server_yaml_path(self) -> Path:
+        """Path to config/default.yaml (the file the server actually reads).
+
+        This file lives at <project_root>/config/default.yaml. settings_tab.py
+        is at <project_root>/src/arcbound/gui/tabs/, so five parents up.
+        """
+        return (
+            Path(__file__).resolve().parent.parent.parent.parent.parent
+            / "config"
+            / "default.yaml"
+        )
+
+    def _load_server_config(self):
+        """Populate the Server section from config/default.yaml.
+
+        The server reads host/port/timeout from the ``server:`` block and
+        epsilon from the ``inference:`` block. Values not present in the file
+        keep their built-in defaults.
+        """
+        path = self._server_yaml_path()
+        if not path.exists():
+            return
+        try:
+            import yaml
+
+            with open(path) as f:
+                cfg = yaml.safe_load(f) or {}
+        except Exception:
+            return
+        server = cfg.get("server") or {}
+        inference = cfg.get("inference") or {}
+        values = {
+            "host": server.get("host"),
+            "port": server.get("port"),
+            "timeout_ms": server.get("timeout_ms"),
+            "epsilon": inference.get("epsilon"),
+        }
+        for key, val in values.items():
+            if val is None or key not in self._entries:
+                continue
+            widget, vtype, _, _ = self._entries[key]
+            widget.delete(0, tk.END)
+            widget.insert(0, str(val))
+
+    def _save_server_config(self):
+        """Persist the Server section to config/default.yaml.
+
+        Uses targeted line replacement (rather than a full YAML dump) so the
+        file's comments and layout are preserved. host/port/timeout go under
+        ``server:``; epsilon goes under ``inference:``.
+        """
+        path = self._server_yaml_path()
+        if not path.exists():
+            return
+        try:
+            text = path.read_text()
+        except Exception:
+            return
+
+        def fmt(val):
+            return f'"{val}"' if isinstance(val, str) else str(val)
+
+        def set_key(text: str, key: str, val, section: str) -> str:
+            # Match the key anywhere in the file, capturing its leading
+            # indentation so it can be preserved on replacement.
+            pattern = re.compile(rf"^(\s*){re.escape(key)}\s*:\s*.*$", re.MULTILINE)
+            line = f"{key}: {fmt(val)}"
+            m = pattern.search(text)
+            if m:
+                # Preserve the original indentation of the key.
+                return pattern.sub(lambda mm: mm.group(1) + line, text, count=1)
+            # Key missing — append it under the section header, indented.
+            sec = re.search(rf"^{re.escape(section)}\s*:\s*$", text, re.MULTILINE)
+            if sec:
+                insert_at = sec.end()
+                return text[:insert_at] + "\n  " + line + text[insert_at:]
+            return text
+
+        try:
+            host = self._get_value("host")
+            port = self._get_value("port")
+            timeout_ms = self._get_value("timeout_ms")
+            epsilon = self._get_value("epsilon")
+        except (ValueError, tk.TclError):
+            return
+
+        text = set_key(text, "host", host, "server")
+        text = set_key(text, "port", port, "server")
+        text = set_key(text, "timeout_ms", timeout_ms, "server")
+        text = set_key(text, "epsilon", epsilon, "inference")
+        path.write_text(text)
+
     def select_model(self, name: str):
         """Load settings from model config when selected."""
         self._current_model = name
@@ -250,9 +563,19 @@ class SettingsTab(ttk.Frame):
                         widget.insert(0, str(val))
 
     def _save(self):
-        """Save current values to model config."""
+        """Save current values.
+
+        Server fields (host/port/timeout/epsilon) are written to
+        config/default.yaml — they are server-level, not model-level, and the
+        server reads them there. Model architecture + training fields are
+        written to the selected model's config.json.
+        """
+        # 1. Persist the Server section to config/default.yaml (no model needed).
+        self._save_server_config()
+
+        # 2. Persist model architecture + training fields to the model config.
         if not self._current_model:
-            messagebox.showinfo("Info", "Select a model first.")
+            messagebox.showinfo("Info", "Server settings saved. Select a model to save model settings.")
             return
 
         cfg = {"encoder": {}, "training": {}}

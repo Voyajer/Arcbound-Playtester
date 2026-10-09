@@ -16,17 +16,29 @@ class EvalGraph(ttk.Frame):
         master: tk.Misc,
         width: int = 500,
         height: int = 150,
+        x_label: str = "Turn",
         **kwargs,
     ):
         super().__init__(master, **kwargs)
-        self._data: List[Tuple[int, float]] = []  # (turn, eval_value)
+        self._data: List[Tuple[int, float]] = []  # (x, eval_value)
+        self._last_w = 0
+        self._last_h = 0
+        self._x_label = x_label
 
         self.canvas = tk.Canvas(
             self, width=width, height=height, bg="#1e1e1e", highlightthickness=1, highlightbackground="#444444"
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
+        # Re-render whenever the canvas is resized so the chart fills the
+        # allocated area (winfo_width/height only become valid after layout).
+        self.canvas.bind("<Configure>", self._on_configure)
 
         self._draw()
+
+    def _on_configure(self, event=None):
+        # Only redraw when the size actually changes (avoids redundant work).
+        if event is not None and (event.width != self._last_w or event.height != self._last_h):
+            self._draw()
 
     def add_point(self, turn: int, value: float):
         """Add a data point."""
@@ -43,10 +55,21 @@ class EvalGraph(ttk.Frame):
         self._draw()
 
     def _draw(self):
-        w = self.canvas.winfo_reqwidth()
-        h = self.canvas.winfo_reqheight()
+        # Use the *actual* allocated size (not the requested size) so the chart
+        # fills the canvas even when packed with fill=BOTH, expand=True. Before
+        # the first layout pass the allocated size is 0; fall back to the
+        # requested size so the chart still renders (it is redrawn at the real
+        # size once <Configure> fires after layout).
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w <= 1:
+            w = self.canvas.winfo_reqwidth()
+        if h <= 1:
+            h = self.canvas.winfo_reqheight()
         if w <= 1 or h <= 1:
             return
+        self._last_w = w
+        self._last_h = h
 
         self.canvas.delete("all")
 
@@ -107,4 +130,4 @@ class EvalGraph(ttk.Frame):
         # X-axis labels
         self.canvas.create_text(margin_left, h - 5, anchor="sw", text=str(min_turn), fill="#888888", font=("TkFixedFont", 7))
         self.canvas.create_text(margin_left + plot_w, h - 5, anchor="se", text=str(max_turn), fill="#888888", font=("TkFixedFont", 7))
-        self.canvas.create_text(margin_left + plot_w / 2, h - 5, anchor="s", text="Turn", fill="#888888", font=("TkFixedFont", 7))
+        self.canvas.create_text(margin_left + plot_w / 2, h - 5, anchor="s", text=self._x_label, fill="#888888", font=("TkFixedFont", 7))

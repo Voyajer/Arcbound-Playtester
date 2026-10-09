@@ -24,18 +24,34 @@ class EvaluationBar(ttk.Frame):
         self.player_name = player_name
         self.opponent_name = opponent_name
         self._eval_value: float = 0.5  # 50% = equal
+        self._last_w = 0
+        self._last_h = 0
 
         self.canvas = tk.Canvas(
-            self, width=width, height=height, highlightthickness=1, highlightbackground="#666666"
+            self, width=width, height=height, bg="#1e1e1e",
+            highlightthickness=1, highlightbackground="#666666"
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
+        # Re-render whenever the canvas is resized so the bar fills the
+        # allocated area (winfo_width/height only become valid after layout).
+        self.canvas.bind("<Configure>", self._on_configure)
 
         self._draw()
+
+    def _on_configure(self, event=None):
+        # Only redraw when the size actually changes (avoids redundant work).
+        if event is not None and (event.width != self._last_w or event.height != self._last_h):
+            self._draw()
 
     def set_eval(self, value: float):
         """Set evaluation from -1.0 (opponent winning) to +1.0 (player winning)."""
         clamped = max(-1.0, min(1.0, value))
         self._eval_value = (clamped + 1.0) / 2.0  # Map to 0.0-1.0
+        self._draw()
+
+    def reset(self):
+        """Reset to a neutral (0.0) evaluation, e.g. when a new game starts."""
+        self._eval_value = 0.5
         self._draw()
 
     def set_names(self, player: str, opponent: str):
@@ -58,15 +74,23 @@ class EvaluationBar(ttk.Frame):
             return "#cc4444"  # Red - decisive disadvantage
 
     def _draw(self):
-        w, h = self.canvas.winfo_reqwidth(), self.canvas.winfo_reqheight()
-        if w == 1 or h == 1:
+        # Use the *actual* allocated size (not the requested size) so the bar
+        # fills the canvas even when packed with fill=BOTH, expand=True.
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if w <= 1 or h <= 1:
             return  # Not laid out yet
+        self._last_w = w
+        self._last_h = h
 
         self.canvas.delete("all")
-        bar_inner_w = w - 6
-        bar_inner_h = h - 40
+        # Reserve room on the right for the scale labels so they are not
+        # clipped outside the canvas.
+        label_space = 30
+        bar_inner_w = max(10, w - 6 - label_space)
+        bar_inner_h = max(10, h - 40)
         x1 = 3
         y1 = 20
+        bar_cx = x1 + bar_inner_w / 2
 
         # Background
         self.canvas.create_rectangle(x1, y1, x1 + bar_inner_w, y1 + bar_inner_h, fill="#333333", outline="")
@@ -84,6 +108,6 @@ class EvaluationBar(ttk.Frame):
             self.canvas.create_line(x1 - 3, y, x1, y, fill="#888888")
             self.canvas.create_text(x1 + bar_inner_w + 12, y, anchor="w", text=str(label), fill="#cccccc", font=("TkFixedFont", 6))
 
-        # Player names
-        self.canvas.create_text(w / 2, 8, anchor="center", text=self.player_name, fill="#ffffff", font=("TkFixedFont", 7))
-        self.canvas.create_text(w / 2, y1 + bar_inner_h + 14, anchor="center", text=self.opponent_name, fill="#ffffff", font=("TkFixedFont", 7))
+        # Player names (centered over the bar, not the whole canvas)
+        self.canvas.create_text(bar_cx, 8, anchor="center", text=self.player_name, fill="#ffffff", font=("TkFixedFont", 7))
+        self.canvas.create_text(bar_cx, y1 + bar_inner_h + 14, anchor="center", text=self.opponent_name, fill="#ffffff", font=("TkFixedFont", 7))
