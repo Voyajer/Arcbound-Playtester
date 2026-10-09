@@ -137,7 +137,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Arcbound MTG AI Server",
         description="Transformer-based AI for Magic: The Gathering",
-        version="0.1.0",
+        version="0.1.1",
         lifespan=lifespan,
     )
 

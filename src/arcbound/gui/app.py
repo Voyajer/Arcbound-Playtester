@@ -2,7 +2,7 @@
 
 Layout:
 +----------------------------------------------------------+
-|  Arcbound AI Server v0.1.0                               |
+|  Arcbound AI Server v0.1.1                               |
 +------------------+  +-----------------------------------+
 |                  |  |                                   |
 |  Model List      |  |         Content Area              |
@@ -55,7 +55,7 @@ class ArcboundApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Arcbound AI Server v0.1.0")
+        self.title("Arcbound AI Server v0.1.1")
 
         # Data directories (self-contained inside the project root). Loaded
         # before geometry so the saved window size/position can be restored.
@@ -141,7 +141,7 @@ class ArcboundApp(tk.Tk):
         # Top title bar
         title = ttk.Frame(self, padding=(10, 5))
         title.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(title, text="Arcbound AI Server v0.1.0", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
+        ttk.Label(title, text="Arcbound AI Server v0.1.1", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
 
         # Main content: left panel + right tabs (expands to fill the rest)
         main = ttk.Frame(self)

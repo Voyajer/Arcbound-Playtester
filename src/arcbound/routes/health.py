@@ -16,5 +16,5 @@ async def health_check(req: Request):
         "status": "healthy",
         "modelLoaded": model_status.get("modelLoaded", False),
         "modelName": model_status.get("modelName"),
-        "version": "0.1.0",
+        "version": "0.1.1",
     }
