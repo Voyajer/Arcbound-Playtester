@@ -1,3 +1,7 @@
+# ⚠️Warning⚠️
+
+This project was created partially as an experiment in seeing how capable 'vibe coding' is with a local model (Qwen-3.8q4xl) so consider it slop. It does work but no consideration beyond core functionality was considered.
+
 # Arcbound MTG AI
 
 Transformer-based AI server for Magic: The Gathering (Forge).
